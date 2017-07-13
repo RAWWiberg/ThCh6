@@ -1,0 +1,131 @@
+#------------------------------------------------------------------#
+# Pipeline for Performing ANGSD analyses in the Crow Comparative
+# Genomics project
+#
+# Author: R. Axel W. Wiberg
+# Last modified: 06.07.2017
+#------------------------------------------------------------------#
+
+###
+# 1) First create an ancestral consensus genome
+###
+# Software:
+# bamtools
+# samtools v.1.3
+#
+
+#Notes:
+# I use the following individuals
+bwa_C.cornix_B_So_H04_S5_sorted_rmdup.bam
+bwa_C.cornix_ITA_Ro_H11_S1_sorted_rmdup.bam
+bwa_C.cornix_RUS_No_H03_S1_sorted_rmdup.bam
+bwa_C.cornix_S_Up_H03_S5_sorted_rmdup.bam
+bwa_C.cornix_S_Up_H09_S5_sorted_rmdup.bam
+bwa_C.corone_D_Ko_C13_S4_sorted_rmdup.bam
+bwa_C.corone_D_Ko_C04_S3_sorted_rmdup.bam
+bwa_C.corone_E_Vi_C01_S1_sorted_rmdup.bam
+bwa_C.corone_D_Ra_C16_S4_sorted_rmdup.bam
+bwa_C.corone_E_Vi_C57_S1_sorted_rmdup.bam
+bwa_C.orientalis_RUS_Tv_O01_S1_sorted_rmdup.bam
+bwa_C.orientalis_RUS_Pr_O01_S5_sorted_rmdup.bam
+bwa_C.orientalis_RUS_Pr_O02_S7_sorted_rmdup.bam
+bwa_C.orientalis_RUS_Pr_O05_S3_sorted_rmdup.bam
+bwa_C.orientalis_RUS_Pr_O05_S1_sorted_rmdup.bam
+bwa_Cdau*_rmdup.bam
+bwa_Cfru*_rmdup.bam
+
+# Merge the .bam files
+$ bamtools merge -list bams -out 3sp_Ccornix_Cdau_Cfru_all_samples.bam
+$ samtools sort -@ 16 -m 4G -O bam -o 3sp_Ccornix_Cdau_Cfru_all_samples_sorted_rmdup.bam 3sp_Ccornix_Cdau_Cfru_all_samples.bam
+
+# Make a consensus genome
+$ samtools mpileup -f genome_HC_allpaths41687_v2.5.fasta -b Ccornix_Cdau_Cfru_sorted_bams -g -t DP -s -u | bcftools call -c -M -O v > consensus_3sp_Ccornix_Cdau_Cfru.vcf
+
+# Zip and index
+$ bgzip consensus_3sp_Ccornix_Cdau_Cfru.vcf
+$ tabix -p vcf consensus_3sp_Ccornix_Cdau_Cfru.vcf.gz
+
+# Remove INDELs from the consensus genome
+$ java -jar /sw/apps/bioinfo/GATK/3.4.0/GenomeAnalysisTK.jar -T SelectVariants -R genome_HC_allpaths41687_v2.5.fasta --variant:VCF consensus_3sp_Ccornix_Cdau_Cfru.vcf -o consensus_3sp_Ccornix_Cdau_Cfru_snps.vcf --selectTypeToExclude INDEL
+
+# Zip and index
+bgzip consensus_3sp_Ccornix_Cdau_Cfru_snps.vcf
+tabix -p vcf consensus_3sp_Ccornix_Cdau_Cfru_snps.vcf.gz
+
+# Filter the vcf file to get only trully polymorphic SNPs
+# I am using the vcf files where INDELs have already been removes
+$ vcftools --gzvcf consensus_3sp_Ccornix_Cdau_Cfru_snps.vcf.gz \
+	--maf 0.00001 --max-maf 0.99999 --min-alleles 2 --recode --recode-INFO-all \
+	--out consensus_3sp_Ccornix_Cdau_Cfru_snps_trueSNPs
+
+# Next make a coordinate file of the positions of these truly polymorphic SNPs
+# Coordinate file contains only scaffold and position information.
+$ grep -v '^#' consensus_3sp_Ccornix_Cdau_Cfru_snps_trueSNPs.recode.vcf | awk '{print $1 "\t" $2}' > consensus_3sp_Ccornix_Cdau_Cfru_snps_trueSNPs.recode.list
+
+# Zip and index the vcf file
+$ bgzip consensus_3sp_Ccornix_Cdau_Cfru_snps_trueSNPs.recode.vcf
+$ tabix -p vcf consensus_3sp_Ccornix_Cdau_Cfru_snps_trueSNPs.recode.vcf.gz
+
+# Convert consensus .vcf to .fasta with bcftools
+# by default bcftools consensus will replace all sites in the reference genome with the alternative allele if there is one.
+# the "-m" option takes a file of regions to mask with an "N"
+$ bcftools consensus -m consensus_3sp_Ccornix_Cdau_Cfru_snps_trueSNPs.recode.list \
+	--fasta-ref genome_HC_allpaths41687_v2.5.fasta consensus_3sp_Ccornix_Cdau_Cfru_snps.vcf.gz > consensus_3sp_Ccornix_Cdau_Cfru_unfixed_mskVars.fa
+
+# Rename headers  so that they have the 'scaffold_10' format instead of '1 scaffold_10:1' one
+$ perl -pne 's/>\d+\s+(.*):.*/>\1/' consensus_3sp_Ccornix_Cdau_Cfru_unfixed_mskVars.fa > consensus_3sp_Ccornix_Cdau_Cfru_mskVars.fa
+
+
+###
+# 2) Merge the .bam files from each individual for C. moneduloides and C. woodfordi
+###
+# Software:
+# bamtools v. 2.3.0
+# samtools v. 1.3
+
+# Create a list of all the _sorted.bam files: NC3
+$ ls -1 bwa_Cmon_*NC3_*rmdup.bam > NC3_sorted_bams
+
+# Merge the bams from the list
+$ bamtools merge -list NC3_sorted_bams -out NC3.bam
+
+# Sort the merged file by coordinate
+$ samtools sort -@ 16 -m 4G -O bam -o Cmon_NC3.bam NC3.bam
+
+...
+
+###
+# 3) Run ANGSD
+###
+# Software:
+# ANGSD v 0.917
+# List of bam files
+$ ls -1 *.bam > Cmon_bams.list
+
+# Run ANGSD: get sfs
+$ angsd -bam Cmon_bams.list -GL 2 -doSaf 1 -anc consensus_3sp_Ccornix_Cdau_Cfru_mskVarsReps5cov.fa -baq 1 -C 50 \
+	-ref genome_HC_allpaths41687_v2.5_mskReps.fa -minMapQ 1 -minQ 20 -P 24 -out Cmon_run
+
+# Run ANGSD: get sfs
+$ realSFS Cmon_run.saf.idx  > Cmon.sfs
+
+# Run ANGSD: calculate thetas for each site
+$ angsd -bam Cmon_sorted_bams.list -out Cmon_stats -doThetas 1 -doSaf 1 -pest Cmon.sfs -anc consensus_3sp_Ccornix_Cdau_Cfru_mskVarsReps5cov.fa -GL 1 -P 24
+
+# Run ANGSD: calculate Tajimas D
+$ thetaStat do_stat Cmon_stats.thetas.idx
+
+# Run ANGSD: sliding window analysis
+$ thetaStat do_stat Cmon_stats.thetas.idx -win 50000 -step 10000  -outnames theta.thetasWindow50kb_Cmon.gz
+$ thetaStat do_stat Cmon_stats.thetas.idx -win 500000 -step 10000  -outnames theta.thetasWindow500kb_Cmon.gz
+
+
+###
+# 4) Analyse and plot in R
+###
+# see Rscript: "crows_cwoo_cmon_thetasFST.R"
+# see Rscript: "crows_pop_gen_sims.R"
+
+
+
+

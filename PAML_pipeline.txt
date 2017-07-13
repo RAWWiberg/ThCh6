@@ -1,0 +1,200 @@
+#------------------------------------------------------------------#
+# Pipeline for Performing PAML analyses in the Crow Comparative    #
+# Genomics project                                                 #
+#                                                                  #
+# Author: R. Axel W. Wiberg                                        #
+# Last modified: 06.07.2017                                        #
+#------------------------------------------------------------------#
+# This pipeline contains some example commands used for preparing and running
+# the PAML analyses
+
+
+###
+# 1) Extract CDS regions from the reference genomes with gffread in nucleotide format and in protein format
+###
+# Sofware: 
+#cufflinks v2.2.1 (gffread)
+
+#Notes
+# Only extract the longest CDS for those genes where there are multiple CDSs.
+
+$ gffread sp.gff -x sp_cds.fa -g genome.fa # Produces spliced CDSs (nucleotide)
+
+$ gffread sp.gff -y sp_cds_pep.fa -g genome.fa # Produces spliced CDSs (peptide)
+
+###
+# 2) Get sequence statistics for these sequences and find list of genes that have > 90% completeness
+# in species of a "set". This is done in python and R.
+###
+# Software:
+# fastaStats.py
+
+# To get a table of the number of sites and nr. A, T, C, G, N etc
+$ fastaStats.py -f consensus_CDS_sequences.fa -t p
+
+# Check these sequences and plot in R: "crows_orthologs.R"
+# This step also finds the genes which are in common across the species sets:
+# 	5 species: C. moneduloides, C. frugilegus, C. splendens, C. dauricus, C. corone group, T. guttatus
+#	7 species: C. moneduloides, C. frugilegus, C. splendens, C. dauricus, C. corone group, C. corax, C. tasmanicus, T. guttatus
+#	8 species: C. moneduloides, C. frugilegus, C. splendens, C. dauricus, C. corone group, C. corax, C. tasmanicus, C. hawaiiensis, T. guttatus
+
+
+###
+# 3) Filter the Ccornix CDS fasta to include only those genes which are represented across the species set
+###
+# Software
+# getFasta.py
+
+$ getFasta.py -IDs 5sp_common_genes.txt -fasta Ccornix_reference_rnm2_lCDS.fasta -task f -outfile 5sp_Ccornix_reference_lCDS_nucl.fasta -outdir [output_dir]
+
+
+##
+# 4) Get an orthologs table for T.guttata vs. C.cornix. 
+##
+# Software: 
+# BLAST v. 2.2.6
+# orthAgogue v.1.0.2
+
+# Use the set of 14,149 longest CDSs for each gene from C. cornix
+# Use the set of longest CDSs for each gene in T. guttata
+# concatenate all sequences from Ccornix and Tgut to a single file.
+$ cat Ccornix_cds.fa Tgut_cds.fa > Ccornix_v_Tgut_cds.fasta
+
+# Create a BLAST database
+$ formatdb -i Ccornix_v_Tgut_cds.fasta -p T
+
+# Perform an all-v-all BLAST
+$ blastall -p blastp -i Ccornix_v_Tgut_lCDS.fasta -o Ccornix_v_Tgut_lCDS_out.txt -d Ccornix_v_Tgut_lCDS.fasta -F F -e 1e-10 -m 8 -K 10 -v 10 -b 10 -a 15 
+
+# Run orthAgogue to obtain the high scoring pairs of proteins:
+# using the "bit-score" (-u ) which incorporates information about the e-value as well as the alignment length greatly reduces the number of ties.
+$ orthAgogue -i Ccornix_v_Tgut_lCDS_pep_blastp_out.txt -s "|" -O ./ccornix-v-tgut-paml/ -S -c 4 -u -t 0 -p 1 -dbs 1000000000
+
+
+###
+# 5) Use the orthologs table to extract the T.guttata and C. cornix sequences that are orthologous
+###
+# see Rscript "crows_orthologs.R"
+# Filter table to include only those that are represented across the species sets.
+# Print this final list of Ccornix names to extract the sequences from the other species fasta files
+
+
+###
+# 6) Use the Ccornix IDs in the orthologs list to extract the sequences from all species, one file per gene
+###
+# Software:
+# getFasta.py
+
+$ getFasta.py -IDs 5sp_common_unamb_genes.txt -fasta species_ccornix_cds.fa -task fs -outdir /path/to/outdir}
+
+# To get the Tgut genes use a table of 1-1 orthologs present in each species set
+$ for ccornix in $(cat 5species_ccornix_v_tgut_unamb_genes.tab | awk '{print $2}' | grep "SVEP1" | sed 's/Ccornix|//g'); 
+$ 	do zfinch=$(grep -w "Ccornix|${ccornix}" 5species_ccornix_v_tgut_unamb_genes.tab | awk '{print $1}' | sed 's/Tgut|//g'); 
+$		if [ -n  "${zfinch}" ]; 
+$			then (getFasta.py -IDs ${zfinch} -fasta nucl/Tgut_reference_lCDS_nucl_rnm3.fa -outfile ${ccornix}.fasta -outdir ./)fi; 
+$	done
+
+
+###
+# 6) Concatenate the sequences for each gene from all species
+###
+# 5 species set: Ccornix, Cdauuricus, Cfrugilegus, Csplendens, Cmoneduloides
+##
+$ for i in $(ls 3sp_Ccornix/*.fasta | sed 's/.fasta//g' | sed 's;3sp_Ccornix/;;g'); do cat \
+$ 	3sp_Ccornix/${i}.fasta \
+$ 	Cdau/${i}.fasta \
+$ 	Cfru/${i}.fasta \
+$ 	Csple/${i}.fasta \
+$ 	Cmon/${i}.fasta \
+$ 	Tgut/${i}.fasta > pamlinfiles/${i}.fasta; done
+
+# 7 species set: Ccornix, Cdauuricus, Cfrugilegus, Csplendens, Cmoneduloides, Ctasmanicus, Ccorax
+###
+$ for i in $(ls 3sp_Ccornix/*.fasta | sed 's/.fasta//g'  | sed 's;3sp_Ccornix/;;g'); do cat \
+3sp_Ccornix/${i}.fasta \
+Cdau/${i}.fasta \
+Cfru/${i}.fasta \
+Csple/${i}.fasta \
+Cmon/${i}.fasta \
+Ctas/${i}.fasta \
+Ccorx/${i}.fasta \
+Tgut/${i}.fasta > pamlinfiles/${i}.fasta; done
+
+# 8 species set: Ccornix, Cdauuricus, Cfrugilegus, Chawaiiensis,Csplendens, Cmoneduloides, Ctasmanicus, Ccorax
+##
+$ for i in $(ls 3sp_Ccornix/*.fasta | sed 's/.fasta//g' | sed 's;3sp_Ccornix/;;g'); do cat \
+3sp_Ccornix/${i}.fasta \
+Cdau/${i}.fasta \
+Cfru/${i}.fasta \
+Csple/${i}.fasta \
+Cmon/${i}.fasta \
+Ctas/${i}.fasta \
+Ccorx/${i}.fasta \
+Chaw/${i}.fasta \
+Tgut/${i}.fasta > pamlinfiles/${i}.fasta; done
+
+
+###
+# 7) Check sequences, strip gene names from within file, align in PRANK
+# and clean the .phy files:
+###
+# Software:
+$ cleanFasta.py
+$ pamlCleaner.py
+$ PRANK v.150803
+
+# Make sure there are no ambiguity codes in the sequences.
+$ cleanFasta.py -f ${f}.fasta -o ${f}_clean.fasta
+# Remove the gene names from each header line
+$ stripFastaNames.py -f ${f}_clean.fasta -of ${f}_clean_names.fasta
+
+# Align in PRANK
+$ prank -d=${f}_clean_names.fasta -translate -o=${f} -f='paml'
+
+# Clean the PRANK output
+$ pamlCleaner.py -phy ${f} 
+
+
+###
+# 8) Create codeml.ctl files
+###
+# Software:
+$ createCodemlCtlFile.py
+
+# Alternative model: different w value for NC crow lineage and all other lineages.
+$ createCodemlCtlFile.py -seqfile gene.nuc_clean.phy -treefile species_crows_Atree_ur.nex \
+-clock 0 -omega 0.01 -fix_omega 0 -runmode 0 -model 2 -NSsites 0 -noisy 0 -seqtype 1 -handle A
+
+# "Null model": the same w across the whole tree (still estimated)
+$ createCodemlCtlFile.py -seqfile gene.nuc_clean.phy -treefile species_crows_Nulltree_ur.nex \
+-clock 0 -omega 0.01 -fix_omega 0 -runmode 0 -model 0 -NSsites 0 -noisy 0 -seqtype 1 -handle Null
+
+
+###
+# 9) Run CODEML
+###
+# Sofware:
+# PAML v4.6 (codeml)
+
+$ codeml gene_A.ctl
+
+$ codeml gene_Null.ctl
+
+
+###
+# 10) Parse results files
+###
+# Sofware: 
+# codemlResultsParser.py
+
+$ codemlResultsParser.py -fil ${results_file}
+
+
+###
+# 11) Analyse in R
+###
+# see Rscript: "crows_paml_results_analysis.R"
+
+
+
+

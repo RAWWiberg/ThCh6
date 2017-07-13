@@ -1,0 +1,86 @@
+#------------------------------------------------------------------#
+# Pipeline for Performing CAFE analyses in the Crow Comparative
+# Genomics project
+#
+# Author: R. Axel W. Wiberg
+# Last modified: 06.07.2017
+#------------------------------------------------------------------#
+
+
+###
+# 1) Extract CDS regions for the longest CDS from genomes with gffread in nucleotide
+# format and in protein format
+###
+# Software:
+# cufflinks v2.2.1 (gffread)
+# renameFasta.py
+
+$ gffread sp.gff -x sp_cds.fa -g genome.fa 
+
+$ gffread sp.gff -y sp_cds_pep.fa -g genome.fa
+
+# modify the fasta heade if needed
+$ sed -e 's/>\(rna.*\) \(gene=.*\)/>Ccornix_\1_\2/g' Ccornix_reference_lCDS_nucl.fa > Ccornix_reference_lCDS_rnm_nucl.fa
+$ sed -e 's/>\(gene.*\) \(gene=.*\)/>Ccornix_\1_\2/g' Ccornix_reference_lCDS_nucl.fa > Ccornix_reference_lCDS_rnm_nucl.fa
+
+$ renameFasta.py -f sp_cds.fa -ha [handle] -e 0 > handle.fasta     |
+						       		   | These can't be in the same folder but they need to have same names
+$ renameFasta.py -f sp_cds_pep.fa -ha [handle] -e 0 > handle.fasta | so we can revover nucleotide sequence for the proteins later.
+
+
+###
+# 2) Filter the protein fasta files to remove very short (< 10 AA) proteins
+# -these were causing problems for orthoFinder
+###
+# Software:
+# filterFasta.py
+ 
+$ filterFasta.py -f Cmon_cds.fa -min_length 10 -type pep > Cmon_cds_filt.fa
+
+
+###
+# 3) Do ortholog group clustering with OrthoFinder
+###
+# Software:
+# OrthoFinder v.0.6.0
+
+$ mv Ccornix_lCDS_filt.fa Cmon_cds_filt.fa Tgut_lCDS_filt.fa all_sp_dir/
+
+$ orthofinder.py -f all_sp_dir -t 16 -a 16
+
+
+###
+# 4) Modify tree files in R to make it ultrametric and with branch lengths in units of time.
+# Divergence time estimates from Jonsson et al., 2012 and from Time Tree
+###
+# This is done in R. See Rscript: "crows_orthologs.R"
+
+
+###
+# 5) Count the number of genes in each orthogroup for each species.
+###
+# This is done in R. See Rscript: "crows_tree.R"
+
+
+###
+# 6) CAFE analysis
+###
+# Software
+# CAFE v.3.1
+
+$ cafe
+
+cafe> load -i orthogroups_counts.txt -t 4 -l CAFE_log 
+cafe> tree ((Ccornix:10,Cmon:10)100:32,Tgut:43)
+cafe> lambda -s
+cafe> report CAFEresults
+
+
+7) CAFE logs
+calc > =INDEX(C2:C63,MATCH(MAX(F2:F63),F2:F63,0))
+
+
+
+
+
+

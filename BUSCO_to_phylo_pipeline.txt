@@ -1,0 +1,85 @@
+# Mapping reads to reference genome and building/masking consensus genomes
+# Author: R. Axel W. Wiberg                                                #
+# Last modified: 06.07.2017                                                #
+#--------------------------------------------------------------------------#
+# This pipeline contains some example commands used for running BUSCO and producing
+# the phylogenetic tree
+
+###
+# 1) Run BUSCO
+###
+# Software:
+# BUSCO v.1.22
+#Notes:
+# Use the genomes with all variant sites and with alt allele frequency < 0.5 masked
+
+$ BUSCO -l $BUSCO_LINEAGE_SETS/vertebrata -in [species_genome].fa --cpu 2 -o out_busco -f
+
+
+###
+# 2) Get the common complete genes: see Rscript "crows_BUSCO_results_analysis.R"
+#	# (N = 860)
+###
+
+
+###
+# 3) Extract the gene sequences
+###
+#Software:
+# cufflinks v.2.2.1 (gffread)
+
+$ gffread -g [species_masked_genome].fasta -x [species_busco_common_genes]_nucl.fa [species]_common_complete_genes_sorted.gff
+
+# Split the fasta file into 
+
+
+###
+# 4) Rename and paste same gene from each species into a common fasta file
+###
+#Software:
+# renameFasta.py
+
+$ renameFasta.py -f ${gene}_nucl.fa -ha ${sp} -a 2 > ${gene}_nucl_rnm.fa;
+
+$ for gene in $(cat common_complete_genes.list); do cat *_nraf0.5_seqs/${gene}_nucl_rnm.fa Tgut_seqs/${gene}_nucl_rnm.fa > all_seqs/${gene}.fa; done
+
+
+###
+# 5) Clean to remove anything with > 20% Ns, 
+# and strip the fasta headers of the gene name so that only the species name is left.
+###
+#Software:
+# cleanFasta.py
+# stripFastaNames.py
+
+$ cleanFasta.py -f ${gene}.fa -o ${gene}_cl.fa -c 20; done
+
+$ stripFastaNames.py -f ${gene}.fa -of ${gene}_rnm; done
+
+###
+# 6) Align in PRANK
+###
+# Software:
+$ PRANK v.150803
+
+# Codon alignment of translated sequence. output format fasta
+$ prank -d=${f}_cl_rnm.fasta -codon -translate -o=${f} -f='fasta';
+
+
+###
+# 7) Concatenate the sequence file.
+###
+# Software:
+# concatFasta.py
+
+$ concatFasta.py *best.nuc.fas > all_busco_alns.fas
+
+
+###
+# 8) run RAxML
+###
+# Software:
+# RAxML v. 8.2.4
+# Takes fasta format files
+$ raxmlHPC -m GTRCAT -c 40 -b 179854 -p 12412 -N 10000 -s all_busco_alns.fas -o Tgut -T 4 -n crows_tree
+# important defaults: -f d -A S16

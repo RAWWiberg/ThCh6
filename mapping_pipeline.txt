@@ -1,0 +1,166 @@
+# Mapping reads to reference genome and building/masking consensus genomes
+# Author: R. Axel W. Wiberg                                                #
+# Last modified: 06.07.2017                                                #
+#--------------------------------------------------------------------------#
+# This pipeline contains some example commands used for trimming, mapping,
+# and consensus genome building
+
+###
+# 1) Trim reads to remove any remaining adapters only.
+###
+# Software: trimmomatic v0.36
+$ java -jar trimmomatic.jar PE -phred33 -threads 6 R1.fq.gz R2.fq.gz  tqc_pe_R1.fq.gz ftqc_se_R1.fq.gz tqc_pe_R2.fq.gz ftqc_se_R2.fq.gz \
+	ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 ILLUMINACLIP:TruSeq2-PE.fa:2:30:10;
+
+###
+#2) Map reads, remove duplicates, re-align around indels and sort
+###
+# Reference genome: Ccornix v2.5
+# Software: BWA v0.7.12 mem
+
+# 2.1 Map reads
+$ bwa mem -t 16 genome_HC_allpaths41687_v2.5.fasta ${1}_tqc_pe_R1.fq.gz ${1}_tqc_pe_R2.fq.gz | samtools view -Sb -q 10 - > bwa_${1}.bam
+
+# Sorting for later use with mpileup
+$ samtools sort -@ 16 -m 4G -O bam -o bwa_${1}_sorted.bam bwa_${1}.bam
+
+
+# Notes:
+# This step maps the reads from each sample of each individual from each species to the Ccornix reference genome.
+
+###
+# 3) Consensus genome building
+###
+# Reference genome: Ccornix v2.5
+# Software:
+# samtools v1.3 mpileup
+# bcftools v1.2
+# vcftools v0.1.14
+
+#Notes:
+# This step makes a .vcf and a .fq file that represents the consensus genome for each species mapped to the Ccornix 
+# reference genome. Each consensus genome should be the same length as the reference.
+
+$ samtools mpileup -f genome_HC_allpaths41687_v2.5.fasta -b sorted_bams.txt -g -t DP -u -s | bcftools call -c -M -O v - > consensus_genome.vcf
+
+# Remove INDELS from consensus.vcf
+# This keeps the genome lengths the same and means the annotation coordinates will match up.
+$ java -jar /sw/apps/bioinfo/GATK/3.4.0/GenomeAnalysisTK.jar -T SelectVariants -R genome_HC_allpaths41687_v2.5.fasta --variant:VCF consensus_genome.vcf \
+	-o consensus_genome_snps.vcf --selectTypeToExclude INDEL
+
+# Zip and indext the vcf files
+$ bgzip consensus_${2}_snps.vcf
+$ tabix -p vcf consensus_${2}_snps.vcf.gz
+
+###
+# 3a) To mask variant sites
+###
+# Filter the vcf file to get only trully polymorphic SNPs
+# I am using the vcf files where INDELs have already been removes
+$ vcftools --gzvcf consensus_genome_snps.vcf.gz --maf 0.00001 --max-maf 0.99999 --min-alleles 2 --recode --recode-INFO-all --out consensus_genome_snps_trueSNPs
+
+# Next make a coordinate file of the positions of these truly polymorphic SNPs
+# Coordinate file contains only scaffold and position information.
+$ grep -v '^#' consensus_genome_snps_trueSNPs.recode.vcf | awk '{print $1 "\t" $2}' > consensus_genome_snps_trueSNPs.recode.list
+
+# Zip and index the vcf file
+$ bgzip consensus_genome_snps_trueSNPs.recode.vcf
+$ tabix -p vcf consensus_genome_snps_trueSNPs.recode.vcf.gz
+
+# Convert consensus .vcf to .fasta with bcftools
+# by default bcftools consensus will replace all sites in the reference genome with the alternative allele if there is one.
+# the "-m" option takes a file of regions to mask with an "N"
+$ bcftools consensus -m consensus_genome_snps_trueSNPs.recode.list --fasta-ref genome_HC_allpaths41687_v2.5.fasta consensus_genome_snps.vcf.gz > consensus_genome_unfixed_mskVars.fa
+
+# Rename headers  so that they have the 'scaffold_10' format instead of '1 scaffold_10:1' one
+$ perl -pne 's/>\d+\s+(.*):.*/>\1/' consensus_genome_unfixed_mskVars.fa > consensus_genome_mskVars.fa
+
+###
+# 3b) To keep variant sites if the alternative allele has allele frequency > 0.5
+###
+# Filter VCF file to include only sites with non-ref allele frequency > 0.5
+$ vcftools --gzvcf consensus_genome_snps.vcf.gz --non-ref-af 0.5 --recode --recode-INFO-all --out consensus_genome_snps_nraf0.5
+
+# Zip and index the vcf file
+$ bgzip consensus_genome_snps_nraf0.5.recode.vcf
+$ tabix -p vcf consensus_genome_snps_nraf0.5.recode.vcf.gz
+
+# Convert consensus .vcf to .fasta with bcftools
+$ bcftools consensus --fasta-ref genome_HC_allpaths41687_v2.5.fasta consensus_genome_snps_nraf0.5.recode.vcf.gz > consensus_genome_unfixed_nraf0.5.fa
+
+# Rename headers  so that they have the 'scaffold_10' format instead of '1 scaffold_10:1' one
+$ perl -pne 's/>\d+\s+(.*):.*/>\1/' consensus_genome_unfixed_nraf0.5.fa > consensus_genome_nraf0.5.fa
+
+
+##
+# 4) Masking low coverage
+##
+# Software:
+# bamtools v2.3.0
+# samtools v1.3
+# bedtools v2.25.0
+
+#Notes:
+# This step merges all .bam files for a species into one. Then uses the merged bam files to mask low coverage sites
+
+# Create a list of all the _sorted.bam files
+$ ls -1 species_rmdup.bam > species_sorted_bams
+
+# Merge the bams from the list
+$ bamtools merge -list species_sorted_bams -out species_all_samples.bam
+
+# Sort the merged file by coordinate
+$ samtools sort -@ 16 -m 4G -O bam -o species_all_samples_rmdup_sorted.bam species_all_samples.bam
+
+# Calculate the coverage at each site from the merged bam file
+$ bedtools genomecov -ibam species_all_samples_rmdup_sorted.bam -g genome_HC_allpaths41687_v2.5.fasta -bg > species_genomecov.bed
+
+# Create a .bed file of all sites with coverage <= 5x
+$ awk '$4 <= 5' species_genomecov.bed > species_genomecov_min5.bed
+$ bedtools maskfasta -fi consensus_genome.fa -bed species_genomecov_min5.bed -fo consensue_genome_5cov_genome.fa -mc N
+
+
+###
+# 5) Genome Completeness: get the proportions of N's for the genome.
+###
+# Software:
+# fastaStats.py
+
+# Notes:
+# This step assesses the "completeness" of each gene model that is recovered from the re-sequenced species. This includes 
+# presence/absence determination.
+
+$ fastaStats.py -f consensue_genome_5cov_genome.fa -t o -s n
+
+###
+# 6) Extract the coding sequences for each gene from the genomes
+###
+# Sofware: cufflinks v2.2.1 (gffread)
+$ gffread Ccornix_reference_annotation.gff -x species_ccornix_cds.fa -g consensue_genome_5cov_genome.fa # Produces spliced CDSs (nucleotide)
+
+
+#--------------#
+# NOTES        #
+#--------------#
+# For the C. corone species group (3sp_Ccornix) we combine the following individuals.
+ C.cornix B_So_H04 S5 
+ C.cornix ITA_Ro_H11 S1
+ C.cornix RUS_No_H03 S1
+ C.cornix S_Up_H03 S5
+ C.cornix S_Up_H09 S5
+
+ C.corone D_Ko_C13 S4
+ C.corone E_Vi_C01 S1
+ C.corone D_Ra_C16 S4
+ C.corone E_Vi_C57 S1
+ C.corone D_Ko_C04 S3
+
+ C.orientalis RUS_Tv_O01 S1
+ C.orientalis RUS_Pr_O01 S5
+ C.orientalis RUS_Pr_O02 S7
+ C.orientalis RUS_Pr_O05 S3
+ C.orientalis RUS_Pr_O05 S1
+
+
+
+
